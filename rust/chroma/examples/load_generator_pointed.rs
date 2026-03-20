@@ -26,11 +26,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use biometrics::Sensor;
 use biometrics::Counter;
 use chroma::bench::{
-    collection_cache_file_path, create_client, get_or_create_collections_with_cache, run_dual_load_generator,
-    BackendStats, CollectionSelector, GaussianMixtureModel, LoadMetricRefs,
+    boxed_collection_selector, collection_cache_file_path, create_client,
+    get_or_create_collections_with_cache, run_dual_load_generator, BackendStats,
+    GaussianMixtureModel, LoadMetricRefs,
 };
 use clap::Parser;
 
@@ -188,12 +188,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gmm,
         stats_us,
         stats_eu,
-        |_task_id, _collection_count| {
-            Box::new(|_num_collections, _rng| 0usize) as CollectionSelector
-        },
-        |_task_id, _collection_count| {
-            Box::new(|_num_collections, _rng| 0usize) as CollectionSelector
-        },
+        |_task_id, _collection_count| boxed_collection_selector(|_num_collections, _rng| 0usize),
+        |_task_id, _collection_count| boxed_collection_selector(|_num_collections, _rng| 0usize),
     )
     .await?;
 
