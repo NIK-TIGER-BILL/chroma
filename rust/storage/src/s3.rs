@@ -348,7 +348,7 @@ impl S3Storage {
         let mut reader = output.body.into_async_read();
 
         reader.read_exact(&mut buf).await.map_err(|e| {
-            tracing::error!("Error reading from S3: {}", e);
+            tracing::error!("Error reading from S3: {:?}", e);
             StorageError::Generic {
                 source: Arc::new(e),
             }
@@ -936,6 +936,7 @@ impl Configurable<StorageConfig> for S3Storage {
             StorageConfig::S3(s3_config) => {
                 let timeout_config = TimeoutConfigBuilder::default()
                     .connect_timeout(Duration::from_millis(s3_config.connect_timeout_ms))
+                    .read_timeout(Duration::from_millis(s3_config.read_timeout_ms))
                     .operation_timeout(Duration::from_millis(s3_config.request_timeout_ms))
                     .operation_attempt_timeout(Duration::from_millis(
                         (s3_config.request_timeout_ms

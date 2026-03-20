@@ -7,7 +7,7 @@ use backon::{ExponentialBuilder, Retryable};
 use chroma_api_types::HeartbeatResponse;
 use chroma_config::{registry, Configurable};
 use chroma_error::{ChromaError, ErrorCodes};
-use chroma_log::{LocalCompactionManager, LocalCompactionManagerConfig, Log};
+use chroma_log::{LocalCompactionManager, LocalCompactionManagerConfig, Log, PushLogsError};
 use chroma_metering::{
     CollectionForkContext, CollectionReadContext, CollectionWriteContext, Enterable,
     ExternalCollectionReadContext, FinishRequest, FtsQueryLength, LatestCollectionLogicalSizeBytes,
@@ -28,9 +28,9 @@ use chroma_types::{
     CreateDatabaseError, CreateDatabaseRequest, CreateDatabaseResponse, CreateTenantError,
     CreateTenantRequest, CreateTenantResponse, DatabaseName, DeleteCollectionError,
     DeleteCollectionRecordsError, DeleteCollectionRecordsRequest, DeleteCollectionRecordsResponse,
-    DeleteCollectionRequest, DeleteDatabaseError, DeleteDatabaseRequest, DeleteDatabaseResponse,
-    DetachFunctionError, DetachFunctionRequest, DetachFunctionResponse, ForkCollectionError,
-    ForkCollectionRequest, ForkCollectionResponse, GetCollectionByCrnError,
+    DeleteCollectionRequest, DeleteCollectionResponse, DeleteDatabaseError, DeleteDatabaseRequest,
+    DeleteDatabaseResponse, DetachFunctionError, DetachFunctionRequest, DetachFunctionResponse,
+    ForkCollectionError, ForkCollectionRequest, ForkCollectionResponse, GetCollectionByCrnError,
     GetCollectionByCrnRequest, GetCollectionByCrnResponse, GetCollectionError,
     GetCollectionRequest, GetCollectionResponse, GetCollectionsError, GetDatabaseError,
     GetDatabaseRequest, GetDatabaseResponse, GetRequest, GetResponse, GetTenantError,
@@ -706,7 +706,7 @@ impl ServiceBasedFrontend {
             collection_name,
             ..
         }: DeleteCollectionRequest,
-    ) -> Result<DeleteCollectionRecordsResponse, DeleteCollectionError> {
+    ) -> Result<DeleteCollectionResponse, DeleteCollectionError> {
         let db_name = DatabaseName::new(&database_name).ok_or_else(|| {
             DeleteCollectionError::Internal(Box::new(ValidationError::InvalidArgument(
                 "database name must be at least 3 characters".to_string(),
@@ -740,7 +740,7 @@ impl ServiceBasedFrontend {
             .remove(&collection.collection_id)
             .await;
 
-        Ok(DeleteCollectionRecordsResponse {})
+        Ok(DeleteCollectionResponse {})
     }
 
     pub async fn retryable_fork(
@@ -857,6 +857,13 @@ impl ServiceBasedFrontend {
         res
     }
 
+    pub async fn fork_count(
+        &mut self,
+        collection_id: CollectionUuid,
+    ) -> Result<usize, chroma_types::CountForksError> {
+        self.sysdb_client.count_forks(collection_id).await
+    }
+
     pub async fn retryable_push_logs(
         &mut self,
         tenant_id: &str,
@@ -864,7 +871,7 @@ impl ServiceBasedFrontend {
         collection_id: CollectionUuid,
         records: Vec<OperationRecord>,
         cmek: Option<Cmek>,
-    ) -> Result<(), Box<dyn ChromaError>> {
+    ) -> Result<(), PushLogsError> {
         self.log_client
             .push_logs(tenant_id, database_name, collection_id, records, cmek)
             .await
@@ -927,7 +934,7 @@ impl ServiceBasedFrontend {
         };
         let res = add_to_retry
             .retry(self.retries_builder)
-            .when(|e| matches!(e.code(), ErrorCodes::AlreadyExists))
+            .when(|e| matches!(e, PushLogsError::Backoff))
             .notify(|_, _| {
                 let retried = retries.fetch_add(1, Ordering::Relaxed);
                 if retried > 0 {
@@ -963,13 +970,10 @@ impl ServiceBasedFrontend {
                 }
                 Ok(AddCollectionRecordsResponse {})
             }
-            Err(e) => {
-                if e.code() == ErrorCodes::AlreadyExists {
-                    Err(AddCollectionRecordsError::Backoff)
-                } else {
-                    Err(AddCollectionRecordsError::Other(Box::new(e) as _))
-                }
-            }
+            Err(e) => match e {
+                PushLogsError::Backoff => Err(AddCollectionRecordsError::Backoff),
+                other => Err(AddCollectionRecordsError::Other(Box::new(other) as _)),
+            },
         }
     }
 
@@ -1034,7 +1038,7 @@ impl ServiceBasedFrontend {
         };
         let res = add_to_retry
             .retry(self.retries_builder)
-            .when(|e| matches!(e.code(), ErrorCodes::AlreadyExists))
+            .when(|e| matches!(e, PushLogsError::Backoff))
             .notify(|_, _| {
                 let retried = retries.fetch_add(1, Ordering::Relaxed);
                 if retried > 0 {
@@ -1070,13 +1074,10 @@ impl ServiceBasedFrontend {
                 }
                 Ok(UpdateCollectionRecordsResponse {})
             }
-            Err(e) => {
-                if e.code() == ErrorCodes::AlreadyExists {
-                    Err(UpdateCollectionRecordsError::Backoff)
-                } else {
-                    Err(UpdateCollectionRecordsError::Other(Box::new(e) as _))
-                }
-            }
+            Err(e) => match e {
+                PushLogsError::Backoff => Err(UpdateCollectionRecordsError::Backoff),
+                other => Err(UpdateCollectionRecordsError::Other(Box::new(other) as _)),
+            },
         }
     }
 
@@ -1143,7 +1144,7 @@ impl ServiceBasedFrontend {
         };
         let res = add_to_retry
             .retry(self.retries_builder)
-            .when(|e| matches!(e.code(), ErrorCodes::AlreadyExists))
+            .when(|e| matches!(e, PushLogsError::Backoff))
             .notify(|_, _| {
                 let retried = retries.fetch_add(1, Ordering::Relaxed);
                 if retried > 0 {
@@ -1179,13 +1180,10 @@ impl ServiceBasedFrontend {
                 }
                 Ok(UpsertCollectionRecordsResponse {})
             }
-            Err(e) => {
-                if e.code() == ErrorCodes::AlreadyExists {
-                    Err(UpsertCollectionRecordsError::Backoff)
-                } else {
-                    Err(UpsertCollectionRecordsError::Other(Box::new(e) as _))
-                }
-            }
+            Err(e) => match e {
+                PushLogsError::Backoff => Err(UpsertCollectionRecordsError::Backoff),
+                other => Err(UpsertCollectionRecordsError::Other(Box::new(other) as _)),
+            },
         }
     }
 
@@ -1197,8 +1195,10 @@ impl ServiceBasedFrontend {
             collection_id,
             ids,
             r#where,
+            limit,
             ..
         }: DeleteCollectionRecordsRequest,
+        region: String,
     ) -> Result<DeleteCollectionRecordsResponse, DeleteCollectionRecordsError> {
         let database_name_typed = DatabaseName::new(database_name.clone())
             .ok_or(DeleteCollectionRecordsError::InvalidDatabaseName)?;
@@ -1239,10 +1239,7 @@ impl ServiceBasedFrontend {
                         collection_and_segments,
                     },
                     filter,
-                    limit: Limit {
-                        offset: 0,
-                        limit: None,
-                    },
+                    limit: Limit { offset: 0, limit },
                     proj: Projection {
                         document: false,
                         embedding: false,
@@ -1309,13 +1306,18 @@ impl ServiceBasedFrontend {
                 database_name.clone(),
                 collection_id.0.to_string(),
                 WriteAction::Delete,
+                region,
             ));
+
+        let deleted = records.len() as u32;
 
         // Closure for write context operations
         (async {
             if records.is_empty() {
                 tracing::debug!("Bailing because no records were found");
-                return Ok::<_, DeleteCollectionRecordsError>(DeleteCollectionRecordsResponse {});
+                return Ok::<_, DeleteCollectionRecordsError>(DeleteCollectionRecordsResponse {
+                    deleted: 0,
+                });
             }
 
             let log_size_bytes = records.iter().map(OperationRecord::size_bytes).sum();
@@ -1334,12 +1336,9 @@ impl ServiceBasedFrontend {
                 cmek,
             )
             .await
-            .map_err(|err| {
-                if err.code() == ErrorCodes::Unavailable {
-                    DeleteCollectionRecordsError::Backoff
-                } else {
-                    DeleteCollectionRecordsError::Internal(Box::new(err) as _)
-                }
+            .map_err(|err| match err {
+                PushLogsError::Backoff => DeleteCollectionRecordsError::Backoff,
+                other => DeleteCollectionRecordsError::Internal(Box::new(other)),
             })?;
 
             // Attach metadata to the write context
@@ -1347,7 +1346,7 @@ impl ServiceBasedFrontend {
                 context.log_size_bytes(log_size_bytes);
             });
 
-            Ok(DeleteCollectionRecordsResponse {})
+            Ok(DeleteCollectionRecordsResponse { deleted })
         })
         .meter(collection_write_context_container.clone())
         .await?;
@@ -1370,23 +1369,25 @@ impl ServiceBasedFrontend {
             }
         }
 
-        Ok(DeleteCollectionRecordsResponse {})
+        Ok(DeleteCollectionRecordsResponse { deleted })
     }
 
     pub async fn delete(
         &mut self,
         request: DeleteCollectionRecordsRequest,
+        region: String,
     ) -> Result<DeleteCollectionRecordsResponse, DeleteCollectionRecordsError> {
         let retries = Arc::new(AtomicUsize::new(0));
         let delete_to_retry = || {
             let mut self_clone = self.clone();
             let request_clone = request.clone();
+            let region_clone = region.clone();
             let cache_clone = self
                 .collections_with_segments_provider
                 .collections_with_segments_cache
                 .clone();
             async move {
-                let res = Box::pin(self_clone.retryable_delete(request_clone)).await;
+                let res = Box::pin(self_clone.retryable_delete(request_clone, region_clone)).await;
                 match res {
                     Ok(res) => Ok(res),
                     Err(e) => {
@@ -1405,8 +1406,7 @@ impl ServiceBasedFrontend {
         let res = Box::pin(
             delete_to_retry
                 .retry(self.collections_with_segments_provider.get_retry_backoff())
-                // NOTE: Transport level errors will manifest as unknown errors, and they should also be retried
-                .when(|e| matches!(e.code(), ErrorCodes::NotFound | ErrorCodes::Unknown))
+                .when(|e| matches!(e, DeleteCollectionRecordsError::Backoff))
                 .notify(|_, _| {
                     let retried = retries.fetch_add(1, Ordering::Relaxed);
                     if retried > 0 {
@@ -1429,6 +1429,7 @@ impl ServiceBasedFrontend {
         CountRequest {
             database_name,
             collection_id,
+            read_level,
             ..
         }: CountRequest,
     ) -> Result<CountResponse, QueryError> {
@@ -1451,6 +1452,7 @@ impl ServiceBasedFrontend {
                 scan: Scan {
                     collection_and_segments,
                 },
+                read_level,
             })
             .await?;
         let return_bytes = count_result.size_bytes();
@@ -2214,7 +2216,8 @@ impl ServiceBasedFrontend {
 
         let cmek = collection.schema.and_then(|schema| schema.cmek.clone());
         self.retryable_push_logs(&tenant, database_name, collection_id, logs, cmek)
-            .await?;
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn ChromaError>)?;
         Ok(())
     }
 

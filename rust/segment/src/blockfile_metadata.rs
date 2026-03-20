@@ -403,7 +403,7 @@ impl<'me> MetadataSegmentWriter<'me> {
                 .map_err(|e| MetadataSegmentError::BlockfileOpenError(*e))?;
             let max_writer = {
                 let mut options =
-                    BlockfileWriterOptions::new(max_prefix.to_string()).fork(max_uuid);
+                    BlockfileWriterOptions::new(max_prefix.to_string()).ordered_mutations();
                 if let Some(cmek) = &cmek {
                     options = options.with_cmek(cmek.clone());
                 }
@@ -425,7 +425,8 @@ impl<'me> MetadataSegmentWriter<'me> {
                 .map_err(|e| MetadataSegmentError::BlockfileOpenError(*e))?;
             let offset_value_writer = {
                 let mut options = BlockfileWriterOptions::new(offset_value_prefix.to_string())
-                    .fork(offset_value_uuid);
+                    .fork(offset_value_uuid)
+                    .ordered_mutations();
                 if let Some(cmek) = &cmek {
                     options = options.with_cmek(cmek.clone());
                 }
@@ -442,7 +443,8 @@ impl<'me> MetadataSegmentWriter<'me> {
             ))
         } else {
             let max_writer = {
-                let mut options = BlockfileWriterOptions::new(prefix_path.clone());
+                let mut options =
+                    BlockfileWriterOptions::new(prefix_path.clone()).ordered_mutations();
                 if let Some(cmek) = &cmek {
                     options = options.with_cmek(cmek.clone());
                 }
@@ -452,7 +454,8 @@ impl<'me> MetadataSegmentWriter<'me> {
                     .map_err(|e| MetadataSegmentError::BlockfileError(*e))?
             };
             let offset_value_writer = {
-                let mut options = BlockfileWriterOptions::new(prefix_path.clone());
+                let mut options =
+                    BlockfileWriterOptions::new(prefix_path.clone()).ordered_mutations();
                 if let Some(cmek) = &cmek {
                     options = options.with_cmek(cmek.clone());
                 }
@@ -1431,7 +1434,8 @@ mod test {
     use crate::{
         blockfile_metadata::{MetadataSegmentReader, MetadataSegmentWriter},
         blockfile_record::{
-            RecordSegmentReader, RecordSegmentReaderCreationError, RecordSegmentWriter,
+            RecordSegmentReader, RecordSegmentReaderCreationError, RecordSegmentReaderOptions,
+            RecordSegmentWriter,
         },
         test::TestDistributedSegment,
         types::materialize_logs,
@@ -1516,6 +1520,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -1563,7 +1568,7 @@ mod test {
             ];
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -1591,9 +1596,14 @@ mod test {
                     }
                 }
             };
-            let mat_records = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Log materialization failed");
+            let mat_records = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Log materialization failed");
             metadata_writer
                 .apply_materialized_log_chunk(&record_segment_reader, &mat_records, None)
                 .await
@@ -1648,6 +1658,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -1656,6 +1667,7 @@ mod test {
             &database_id,
             &record_segment,
             &blockfile_provider,
+            None,
             None,
         )
         .await
@@ -1670,9 +1682,14 @@ mod test {
         .await
         .expect("Error creating segment writer");
         let some_reader = Some(record_segment_reader);
-        let mat_records = materialize_logs(&some_reader, data, None)
-            .await
-            .expect("Log materialization failed");
+        let mat_records = materialize_logs(
+            &some_reader,
+            data,
+            None,
+            &RecordSegmentReaderOptions::default(),
+        )
+        .await
+        .expect("Log materialization failed");
         metadata_writer
             .apply_materialized_log_chunk(&some_reader, &mat_records, None)
             .await
@@ -1701,6 +1718,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Record segment reader should be initialized by now");
@@ -1740,6 +1758,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -1748,6 +1767,7 @@ mod test {
             &database_id,
             &record_segment,
             &blockfile_provider,
+            None,
             None,
         )
         .await
@@ -1762,9 +1782,14 @@ mod test {
         .await
         .expect("Error creating segment writer");
         let some_reader = Some(record_segment_reader);
-        let mat_records = materialize_logs(&some_reader, data, None)
-            .await
-            .expect("Log materialization failed");
+        let mat_records = materialize_logs(
+            &some_reader,
+            data,
+            None,
+            &RecordSegmentReaderOptions::default(),
+        )
+        .await
+        .expect("Log materialization failed");
         metadata_writer
             .apply_materialized_log_chunk(&some_reader, &mat_records, None)
             .await
@@ -1795,6 +1820,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Record segment reader should be initialized by now");
@@ -1848,6 +1874,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -1891,7 +1918,7 @@ mod test {
             ];
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -1919,9 +1946,14 @@ mod test {
                     }
                 }
             };
-            let mat_records = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Log materialization failed");
+            let mat_records = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Log materialization failed");
             metadata_writer
                 .apply_materialized_log_chunk(&record_segment_reader, &mat_records, None)
                 .await
@@ -1983,6 +2015,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -1991,6 +2024,7 @@ mod test {
             &database_id,
             &record_segment,
             &blockfile_provider,
+            None,
             None,
         )
         .await
@@ -2005,9 +2039,14 @@ mod test {
         .await
         .expect("Error creating segment writer");
         let some_reader = Some(record_segment_reader);
-        let mat_records = materialize_logs(&some_reader, data, None)
-            .await
-            .expect("Log materialization failed");
+        let mat_records = materialize_logs(
+            &some_reader,
+            data,
+            None,
+            &RecordSegmentReaderOptions::default(),
+        )
+        .await
+        .expect("Log materialization failed");
         metadata_writer
             .apply_materialized_log_chunk(&some_reader, &mat_records, None)
             .await
@@ -2061,6 +2100,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -2124,6 +2164,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -2158,7 +2199,7 @@ mod test {
             }];
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -2186,9 +2227,14 @@ mod test {
                     }
                 }
             };
-            let mat_records = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Log materialization failed");
+            let mat_records = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Log materialization failed");
             metadata_writer
                 .apply_materialized_log_chunk(&record_segment_reader, &mat_records, None)
                 .await
@@ -2232,6 +2278,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -2240,6 +2287,7 @@ mod test {
             &database_id,
             &record_segment,
             &blockfile_provider,
+            None,
             None,
         )
         .await
@@ -2254,9 +2302,14 @@ mod test {
         .await
         .expect("Error creating segment writer");
         let some_reader = Some(record_segment_reader);
-        let mat_records = materialize_logs(&some_reader, data, None)
-            .await
-            .expect("Log materialization failed");
+        let mat_records = materialize_logs(
+            &some_reader,
+            data,
+            None,
+            &RecordSegmentReaderOptions::default(),
+        )
+        .await
+        .expect("Log materialization failed");
         metadata_writer
             .apply_materialized_log_chunk(&some_reader, &mat_records, None)
             .await
@@ -2309,6 +2362,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -2369,6 +2423,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -2394,7 +2449,7 @@ mod test {
             }];
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -2422,9 +2477,14 @@ mod test {
                     }
                 }
             };
-            let mat_records = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Log materialization failed");
+            let mat_records = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Log materialization failed");
             metadata_writer
                 .apply_materialized_log_chunk(&record_segment_reader, &mat_records, None)
                 .await
@@ -2466,6 +2526,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -2474,6 +2535,7 @@ mod test {
             &database_id,
             &record_segment,
             &blockfile_provider,
+            None,
             None,
         )
         .await
@@ -2488,9 +2550,14 @@ mod test {
         .await
         .expect("Error creating segment writer");
         let some_reader = Some(record_segment_reader);
-        let mat_records = materialize_logs(&some_reader, data, None)
-            .await
-            .expect("Log materialization failed");
+        let mat_records = materialize_logs(
+            &some_reader,
+            data,
+            None,
+            &RecordSegmentReaderOptions::default(),
+        )
+        .await
+        .expect("Log materialization failed");
         metadata_writer
             .apply_materialized_log_chunk(&some_reader, &mat_records, None)
             .await
@@ -2544,6 +2611,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -2602,6 +2670,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -2640,7 +2709,7 @@ mod test {
             ];
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -2668,9 +2737,14 @@ mod test {
                     }
                 }
             };
-            let mat_records = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Log materialization failed");
+            let mat_records = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Log materialization failed");
             metadata_writer
                 .apply_materialized_log_chunk(&record_segment_reader, &mat_records, None)
                 .await
@@ -2750,6 +2824,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Reader should be initialized by now");
@@ -2891,6 +2966,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -2939,7 +3015,7 @@ mod test {
 
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -2950,9 +3026,14 @@ mod test {
                 },
             };
 
-            let materialized_logs = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Error materializing logs");
+            let materialized_logs = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Error materializing logs");
 
             // Apply logs - this should handle sparse vectors
             segment_writer
@@ -3282,6 +3363,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -3326,7 +3408,7 @@ mod test {
             ];
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -3337,9 +3419,14 @@ mod test {
                 },
             };
 
-            let mat_records = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Log materialization failed");
+            let mat_records = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Log materialization failed");
 
             // Pass the FTS-disabled schema
             metadata_writer
@@ -3420,6 +3507,7 @@ mod test {
         let record_segment_reader = Box::pin(RecordSegmentReader::from_segment(
             &record_segment,
             &blockfile_provider,
+            None,
         ))
         .await
         .expect("Record segment reader should be initialized");
@@ -3478,6 +3566,7 @@ mod test {
                 &record_segment,
                 &blockfile_provider,
                 None,
+                None,
             )
             .await
             .expect("Error creating segment writer");
@@ -3517,7 +3606,7 @@ mod test {
             ];
             let data: Chunk<LogRecord> = Chunk::new(data.into());
             let record_segment_reader: Option<RecordSegmentReader> = match Box::pin(
-                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider),
+                RecordSegmentReader::from_segment(&record_segment, &blockfile_provider, None),
             )
             .await
             {
@@ -3528,9 +3617,14 @@ mod test {
                 },
             };
 
-            let mat_records = materialize_logs(&record_segment_reader, data, None)
-                .await
-                .expect("Log materialization failed");
+            let mat_records = materialize_logs(
+                &record_segment_reader,
+                data,
+                None,
+                &RecordSegmentReaderOptions::default(),
+            )
+            .await
+            .expect("Log materialization failed");
 
             // Pass None (default = FTS enabled)
             metadata_writer

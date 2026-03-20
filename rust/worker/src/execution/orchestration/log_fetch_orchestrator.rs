@@ -8,9 +8,10 @@ use chroma_log::Log;
 use chroma_segment::{
     blockfile_metadata::{MetadataSegmentError, MetadataSegmentWriter},
     blockfile_record::{
-        RecordSegmentReader, RecordSegmentReaderCreationError, RecordSegmentWriter,
-        RecordSegmentWriterCreationError,
+        RecordSegmentReader, RecordSegmentReaderCreationError, RecordSegmentReaderOptions,
+        RecordSegmentWriter, RecordSegmentWriterCreationError,
     },
+    bloom_filter::BloomFilterManager,
     distributed_hnsw::{DistributedHNSWSegmentFromSegmentError, DistributedHNSWSegmentWriter},
     distributed_spann::SpannSegmentWriterError,
     spann_provider::SpannProvider,
@@ -21,7 +22,9 @@ use chroma_system::{
     wrap, ChannelError, ComponentContext, ComponentHandle, Dispatcher, Handler, Orchestrator,
     OrchestratorContext, PanicError, TaskError, TaskMessage, TaskResult,
 };
-use chroma_types::{Chunk, CollectionUuid, JobId, LogRecord, SegmentType};
+use chroma_types::{
+    Chunk, CollectionUuid, JobId, LogRecord, SegmentFlushInfo, SegmentScope, SegmentType,
+};
 use opentelemetry::trace::TraceContextExt;
 use thiserror::Error;
 use tokio::sync::oneshot::{error::RecvError, Sender};
@@ -295,6 +298,7 @@ impl LogFetchOrchestrator {
         collection_id: CollectionUuid,
         database_name: chroma_types::DatabaseName,
         is_rebuild: bool,
+        apply_segment_scopes: std::collections::HashSet<chroma_types::SegmentScope>,
         fetch_log_batch_size: u32,
         fetch_log_concurrency: usize,
         max_compaction_size: usize,
@@ -305,9 +309,12 @@ impl LogFetchOrchestrator {
         hnsw_provider: HnswIndexProvider,
         spann_provider: SpannProvider,
         dispatcher: ComponentHandle<Dispatcher>,
+        fragment_fetcher: Option<Arc<crate::execution::operators::fragment_fetch::FragmentFetcher>>,
+        bloom_filter_manager: Option<BloomFilterManager>,
     ) -> Self {
         let context = CompactionContext::new(
             is_rebuild,
+            apply_segment_scopes,
             fetch_log_batch_size,
             fetch_log_concurrency,
             max_compaction_size,
@@ -319,6 +326,8 @@ impl LogFetchOrchestrator {
             spann_provider,
             dispatcher.clone(),
             false, // LogFetchOrchestrator doesn't need is_function_disabled
+            fragment_fetcher,
+            bloom_filter_manager,
         );
         LogFetchOrchestrator {
             collection_id,
@@ -390,6 +399,14 @@ impl LogFetchOrchestrator {
             collection_info.collection.total_records_post_compaction = count;
         }
 
+        let total_log_count: usize = partitions.iter().map(|p| p.len()).sum();
+        let option = RecordSegmentReaderOptions {
+            use_bloom_filter: self
+                .context
+                .bloom_filter_manager
+                .as_ref()
+                .is_some_and(|mgr| total_log_count >= mgr.storage_fetch_threshold()),
+        };
         self.num_uncompleted_materialization_tasks = partitions.len();
         for partition in partitions.iter() {
             let operator = MaterializeLogOperator::new();
@@ -397,6 +414,7 @@ impl LogFetchOrchestrator {
                 partition.clone(),
                 record_reader.clone(),
                 next_max_offset_id.clone(),
+                option,
             );
             let task = wrap(
                 operator,
@@ -435,6 +453,7 @@ impl Handler<TaskResult<GetCollectionAndSegmentsOutput, GetCollectionAndSegments
                 match Box::pin(RecordSegmentReader::from_segment(
                     &output.record_segment,
                     &self.context.blockfile_provider,
+                    self.context.bloom_filter_manager.clone(),
                 ))
                 .await
                 {
@@ -488,6 +507,7 @@ impl Handler<TaskResult<GetCollectionAndSegmentsOutput, GetCollectionAndSegments
                     tenant: collection.tenant.clone(),
                     database_name,
                     fetch_log_concurrency: self.context.fetch_log_concurrency,
+                    fragment_fetcher: self.context.fragment_fetcher.clone(),
                 }),
                 (),
                 ctx.receiver(),
@@ -498,6 +518,23 @@ impl Handler<TaskResult<GetCollectionAndSegmentsOutput, GetCollectionAndSegments
             )
         };
 
+        // Store original segment file paths before any clearing, so non-rebuilt
+        // segments can be included in the version file during selective rebuild.
+        let original_segment_flush_infos = vec![
+            SegmentFlushInfo {
+                segment_id: output.metadata_segment.id,
+                file_paths: output.metadata_segment.file_path.clone(),
+            },
+            SegmentFlushInfo {
+                segment_id: output.record_segment.id,
+                file_paths: output.record_segment.file_path.clone(),
+            },
+            SegmentFlushInfo {
+                segment_id: output.vector_segment.id,
+                file_paths: output.vector_segment.file_path.clone(),
+            },
+        ];
+
         let collection_info = CollectionCompactInfo {
             collection_id: collection.collection_id,
             collection: collection.clone(),
@@ -505,6 +542,7 @@ impl Handler<TaskResult<GetCollectionAndSegmentsOutput, GetCollectionAndSegments
             pulled_log_offset: collection.log_position,
             hnsw_index_uuid: None,
             schema: collection.schema.clone(),
+            original_segment_flush_infos,
         };
 
         let result = self.context.collection_info.set(collection_info);
@@ -533,10 +571,17 @@ impl Handler<TaskResult<GetCollectionAndSegmentsOutput, GetCollectionAndSegments
         let mut record_segment = output.record_segment.clone();
         let mut vector_segment = output.vector_segment.clone();
         if self.context.is_rebuild {
-            // Reset the metadata and vector segments by purging the file paths
-            metadata_segment.file_path = Default::default();
-            record_segment.file_path = Default::default();
-            vector_segment.file_path = Default::default();
+            // Only clear file paths for segments that are being rebuilt.
+            // Empty apply_segment_scopes means rebuild all (backward compatible).
+            if self.context.scope_is_active(&SegmentScope::METADATA) {
+                metadata_segment.file_path = Default::default();
+            }
+            if self.context.scope_is_active(&SegmentScope::RECORD) {
+                record_segment.file_path = Default::default();
+            }
+            if self.context.scope_is_active(&SegmentScope::VECTOR) {
+                vector_segment.file_path = Default::default();
+            }
         }
 
         let cmek = collection.schema.as_ref().and_then(|s| s.cmek.clone());
@@ -549,6 +594,7 @@ impl Handler<TaskResult<GetCollectionAndSegmentsOutput, GetCollectionAndSegments
                     &record_segment,
                     &self.context.blockfile_provider,
                     cmek.clone(),
+                    self.context.bloom_filter_manager.clone(),
                 )
                 .await,
                 ctx,
@@ -632,7 +678,11 @@ impl Handler<TaskResult<GetCollectionAndSegmentsOutput, GetCollectionAndSegments
         };
 
         let writers = CompactWriters {
-            record_reader: record_reader.clone().filter(|_| !self.context.is_rebuild),
+            // If we are rebuilding but not applying to the record segment,
+            // we should still read the record segment to get its offset ids.
+            record_reader: record_reader
+                .clone()
+                .filter(|_| !self.context.is_full_rebuild()),
             metadata_writer,
             record_writer,
             vector_writer,
