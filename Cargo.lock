@@ -1837,6 +1837,7 @@ dependencies = [
  "chroma-tracing",
  "chroma-types",
  "futures",
+ "hyper 1.7.0",
  "opentelemetry",
  "proptest",
  "rand 0.8.5",
